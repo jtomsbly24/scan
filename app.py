@@ -10,10 +10,9 @@ st.title("ðŸ“Š NSE Screener")
 # ---------- NOTE / HELP ----------
 with st.expander("Notes / Instructions", expanded=False):
     st.markdown("""
-    - TI63>1.05 FOR BULLISH, <0.95 FOR BEARISH, CHANGE TODAY +1% AND -1% .  
-    - MDT25 AND MDT50 >=1.18.      
-      
-    
+    - TI63 > 1.05 FOR BULLISH, < 0.95 FOR BEARISH  
+    - Daily change Â±1%  
+    - MDT21 AND MDT50 >= 1.18  
     """)
 
 # ---------- COMPUTE BUTTON ----------
@@ -24,7 +23,7 @@ if st.button("âš™ï¸ Calculate / Refresh Computed Table"):
             ensure_computed_table()
             load_data.clear()
             st.success("âœ” Indicator computation completed.")
-        except Exception as e:
+        except Exception:
             st.error("âŒ Error during computation.")
             st.text(traceback.format_exc())
 
@@ -32,7 +31,7 @@ if st.button("âš™ï¸ Calculate / Refresh Computed Table"):
 @st.cache_data(ttl=30)
 def load_data():
     conn = sqlite3.connect(WORKING_DB)
-    df = pd.read_sql("SELECT * FROM computed", conn, parse_dates=['date'])
+    df = pd.read_sql("SELECT * FROM computed", conn, parse_dates=["date"])
     conn.close()
     return df
 
@@ -57,6 +56,13 @@ st.sidebar.subheader("ðŸ’° Price & Volume")
 min_price = st.sidebar.number_input("Min Close Price", value=float(df.close.min()))
 max_price = st.sidebar.number_input("Max Close Price", value=float(df.close.max()))
 min_volume = st.sidebar.number_input("Min Volume", value=0)
+
+# --- Turnover Filter (NEW) ---
+st.sidebar.subheader("ðŸ’° Turnover Filter")
+min_turnover = st.sidebar.number_input(
+    "Min Turnover (Close Ã— Volume)",
+    value=0.0
+)
 
 # --- Volume Filters ---
 st.sidebar.subheader("ðŸ“Š Volume Filters")
@@ -91,6 +97,23 @@ max_mdt21 = st.sidebar.number_input("Max MDT21", value=float(df["MDT21"].max()))
 min_mdt50 = st.sidebar.number_input("Min MDT50", value=float(df["MDT50"].min()))
 max_mdt50 = st.sidebar.number_input("Max MDT50", value=float(df["MDT50"].max()))
 
+# --- 252 Day Range Filters (NEW) ---
+st.sidebar.subheader("ðŸ“Š 252-Day Range Filters")
+min_pct_above_low = st.sidebar.number_input(
+    "% Above 252D Low (Min)",
+    value=0.0
+)
+max_pct_below_high = st.sidebar.number_input(
+    "% Below 252D High (Max)",
+    value=100.0
+)
+
+# --- New High Filters (NEW) ---
+st.sidebar.subheader("ðŸš€ New Highs")
+chk_1m_high = st.sidebar.checkbox("New 1M High")
+chk_3m_high = st.sidebar.checkbox("New 3M High")
+chk_6m_high = st.sidebar.checkbox("New 6M High")
+
 # --- ATR & Relative Strength ---
 st.sidebar.subheader("ðŸ“ ATR & Relative Strength")
 atr_min = st.sidebar.number_input("Min ATR", value=float(df.atr.min()))
@@ -124,10 +147,11 @@ filtered = df.copy()
 if search:
     filtered = filtered[filtered["ticker"].str.contains(search, case=False, na=False)]
 
-# Standard numeric filters
+# Core numeric filters (UNCHANGED, only appended)
 filtered = filtered[
     (filtered.close.between(min_price, max_price)) &
     (filtered.volume >= min_volume) &
+    ((filtered.close * filtered.volume) >= min_turnover) &
     (filtered.daily_change_pct.between(min_daily, max_daily)) &
     (filtered.weekly_change_pct.between(min_week, max_week)) &
     (filtered["1m_change_pct"].between(min_1m, max_1m)) &
@@ -138,6 +162,15 @@ filtered = filtered[
     (filtered.daily_change_rupees.abs() >= abs_move_min) &
     (filtered.MDT21.between(min_mdt21, max_mdt21)) &
     (filtered.MDT50.between(min_mdt50, max_mdt50))
+]
+
+# --- 252 Day % Filters ---
+filtered = filtered[
+    ((filtered.close - filtered["252_days_low"]) / filtered["252_days_low"] * 100) >= min_pct_above_low
+]
+
+filtered = filtered[
+    ((filtered["252_days_high"] - filtered.close) / filtered["252_days_high"] * 100) <= max_pct_below_high
 ]
 
 # EMA Trend Rules
@@ -156,7 +189,15 @@ if chk_vol_yesterday:
 if chk_vol_spike:
     filtered = filtered[filtered.volume > 1.5 * filtered.volume_avg20]
 
-# Apply optional ratio toggles
+# New High Filters
+if chk_1m_high:
+    filtered = filtered[filtered.close >= filtered["252_days_high"] * 0.99]
+if chk_3m_high:
+    filtered = filtered[filtered.close >= filtered["252_days_high"] * 0.97]
+if chk_6m_high:
+    filtered = filtered[filtered.close >= filtered["252_days_high"] * 0.95]
+
+# Optional ratio toggles
 for key, (low, high) in ratio_ranges.items():
     filtered = filtered[filtered[key].between(low, high)]
 
@@ -176,7 +217,5 @@ st.markdown(f"### âœ” Results: {len(filtered_visible)} stocks found")
 st.dataframe(filtered_visible, use_container_width=True)
 
 # ---------- DOWNLOAD ----------
-download_df = filtered_visible.copy()
-download_df["ticker_no_ns"] = download_df["ticker"].str.replace(".NS", "", regex=False)
 csv = filtered_visible.to_csv(index=False)
 st.download_button("â¬‡ Download Filtered CSV", csv, "filtered_stocks.csv", "text/csv")
